@@ -243,7 +243,19 @@ TakeMeter uses two classifiers compared head-to-head:
 - **Input:** Post title + description text, tokenized with max length 256
 - **Output:** Probability distribution over {critical, impressionistic, comparative, analytical}
 - **Hyperparameters:** 3 epochs, learning rate 2e-5, batch size 16, weight decay 0.01, 50 warmup steps
+- **Hyperparameter rationale:** 3 epochs was chosen because the dataset is small (148 training examples) — more epochs risk overfitting, fewer may undertrain. The learning rate 2e-5 is the standard starting point for BERT-family fine-tuning: lower than pretraining rates because the base weights are already meaningful and should move cautiously. Batch size 16 fits comfortably in T4 GPU memory (16 GB).
 - **Train/val/test split:** 70/15/15 (148 / 32 / 32), stratified by label
+
+### Baseline (Groq)
+
+The zero-shot baseline uses `llama-3.3-70b-versatile` via the Groq API with a classification prompt that defines the four labels with one example each and instructs the model to output only the label name. The prompt is in the notebook cell `0abd6018` (`SYSTEM_PROMPT`) and includes:
+
+- Community context: "You are classifying forum posts from Steam Community gaming discussion boards."
+- One-sentence definition per label with a distinguishing signal (e.g., critical: "The author is assessing, not just reacting or describing.")
+- One real example post per label from the dataset
+- Strict output constraint: "Respond with ONLY the label name. Do not explain your reasoning."
+
+Results were collected by running the prompt against all 32 test-set posts with `temperature=0` for deterministic output. The `classify_with_groq()` function parses the model's response by matching against `LABEL_MAP` keys (longest-first to prevent substring collisions). Unparseable responses are counted and excluded from metrics (0 of 32 were unparseable in this run).
 
 ---
 

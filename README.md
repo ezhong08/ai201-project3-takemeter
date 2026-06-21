@@ -239,6 +239,7 @@ TakeMeter uses two classifiers compared head-to-head:
 ### Training Configuration
 
 - **Base model:** `distilbert-base-uncased`
+- **Training platform:** Google Colab with T4 GPU (16 GB VRAM)
 - **Task:** Multi-class text classification (4 labels)
 - **Input:** Post title + description text, tokenized with max length 256
 - **Output:** Probability distribution over {critical, impressionistic, comparative, analytical}

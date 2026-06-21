@@ -224,10 +224,38 @@ Detailed annotation guidelines and edge case resolution rules are documented in 
 ├── data/
 │   ├── taxonomy.md                     # Label definitions & annotation guidelines
 │   ├── all_game.json                   # Full annotated dataset (212 posts)
-│   ├── train.json                      # Training split (148 posts)
-│   ├── val.json                        # Validation split (32 posts)
-│   └── test.json                       # Test split (32 posts)
+│   ├── all_game.csv                    # Full dataset in CSV format (text, label, notes)
 ```
+
+## AI Usage Disclosure
+
+This project used AI tools at three stages, consistent with the AI Tool Plan in [`planning.md`](planning.md#7-ai-tool-plan).
+
+### Pre-Labeling
+
+**Tool:** Deepseek.
+
+**Workflow:** All 212 posts were independently pre-labeled by the LLM using the taxonomy definitions from [`data/taxonomy.md`](data/taxonomy.md) and [`planning.md` §2](planning.md#2-labels). The LLM assigned one label per post based solely on the post text (title + description). Each pre-label was then manually reviewed by a human annotator who read the full post text and either accepted or overrode the pre-label.
+
+**Results:**
+
+| Metric                                | Value                                  |
+| ------------------------------------- | -------------------------------------- |
+| Pre-labels matching existing labels   | 211 / 212 (99.5%)                      |
+| Pre-labels overridden after review    | 1 (g026: `comparative` → `analytical`) |
+| Posts flagged as borderline/difficult | 33 / 212 (15.6%)                       |
+
+The one override (g026) was a post that lists cross-game accomplishments but whose dominant structural mode is explaining game systems and defending legitimacy — the comparisons serve an explanatory purpose. Both `comparative` and `analytical` are defensible labels for this post; the human reviewer chose `analytical` as the dominant mode.
+
+**Tracking:** Every row in [`data/all_game.csv`](data/all_game.csv) includes a `notes` column that records the LLM pre-label, the existing label, and any borderline/difficult-case reasoning. The `label` column reflects the final human-reviewed decision.
+
+### Label Stress-Testing
+
+Before annotation began, the LLM was prompted with the taxonomy and edge-case rules to generate synthetic borderline posts (see [`planning.md` §7.1](planning.md#71-label-stress-testing)). The definitions passed stress-testing: all synthetic posts were classifiable using the dominant-mode rule, and no taxonomy changes were needed before annotation.
+
+### Failure Analysis
+
+After model training and evaluation, misclassified test-set posts will be fed to an LLM for pattern analysis (see [`planning.md` §7.3](planning.md#73-failure-analysis)). Results will be appended to this section.
 
 ## Model
 

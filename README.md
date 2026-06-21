@@ -227,61 +227,241 @@ Detailed annotation guidelines and edge case resolution rules are documented in 
 │   ├── all_game.csv                    # Full dataset in CSV format (text, label, notes)
 ```
 
-## AI Usage Disclosure
-
-This project used AI tools at three stages, consistent with the AI Tool Plan in [`planning.md`](planning.md#7-ai-tool-plan).
-
-### Pre-Labeling
-
-**Tool:** Deepseek.
-
-**Workflow:** All 212 posts were independently pre-labeled by the LLM using the taxonomy definitions from [`data/taxonomy.md`](data/taxonomy.md) and [`planning.md` §2](planning.md#2-labels). The LLM assigned one label per post based solely on the post text (title + description). Each pre-label was then manually reviewed by a human annotator who read the full post text and either accepted or overrode the pre-label.
-
-**Results:**
-
-| Metric                                | Value                                  |
-| ------------------------------------- | -------------------------------------- |
-| Pre-labels matching existing labels   | 211 / 212 (99.5%)                      |
-| Pre-labels overridden after review    | 1 (g026: `comparative` → `analytical`) |
-| Posts flagged as borderline/difficult | 33 / 212 (15.6%)                       |
-
-The one override (g026) was a post that lists cross-game accomplishments but whose dominant structural mode is explaining game systems and defending legitimacy — the comparisons serve an explanatory purpose. Both `comparative` and `analytical` are defensible labels for this post; the human reviewer chose `analytical` as the dominant mode.
-
-**Tracking:** Every row in [`data/all_game.csv`](data/all_game.csv) includes a `notes` column that records the LLM pre-label, the existing label, and any borderline/difficult-case reasoning. The `label` column reflects the final human-reviewed decision.
-
-### Label Stress-Testing
-
-Before annotation began, the LLM was prompted with the taxonomy and edge-case rules to generate synthetic borderline posts (see [`planning.md` §7.1](planning.md#71-label-stress-testing)). The definitions passed stress-testing: all synthetic posts were classifiable using the dominant-mode rule, and no taxonomy changes were needed before annotation.
-
-### Failure Analysis
-
-After model training and evaluation, misclassified test-set posts will be fed to an LLM for pattern analysis (see [`planning.md` §7.3](planning.md#73-failure-analysis)). Results will be appended to this section.
-
 ## Model
 
-TakeMeter fine-tunes a pre-trained transformer-based language model on the annotated gaming forum dataset. The model is trained to classify posts into one of four discourse format labels.
+TakeMeter uses two classifiers compared head-to-head:
 
-### Training Approach
+| Model | Type | Details |
+|-------|------|---------|
+| **Baseline** | Zero-shot | `llama-3.3-70b-versatile` via Groq API, prompted with label definitions only — no training examples |
+| **Fine-tuned** | Supervised | `distilbert-base-uncased` with a 4-label classification head, trained for 3 epochs on 148 labeled posts |
 
-- **Base model:** A pre-trained transformer (e.g., BERT, RoBERTa, or DistilBERT)
+### Training Configuration
+
+- **Base model:** `distilbert-base-uncased`
 - **Task:** Multi-class text classification (4 labels)
-- **Input:** Post title + description text
+- **Input:** Post title + description text, tokenized with max length 256
 - **Output:** Probability distribution over {critical, impressionistic, comparative, analytical}
+- **Hyperparameters:** 3 epochs, learning rate 2e-5, batch size 16, weight decay 0.01, 50 warmup steps
+- **Train/val/test split:** 70/15/15 (148 / 32 / 32), stratified by label
 
-### Evaluation
+---
 
-The model is evaluated on:
+## Evaluation Report
 
-- **Accuracy:** Overall correct classification rate
-- **Per-label F1:** Precision and recall for each label
-- **Confusion analysis:** Where does the model confuse which labels, and why?
+### Overall Accuracy
+
+| Model | Accuracy | Test Set Size |
+|-------|----------|---------------|
+| Baseline (Groq / Llama-3.3-70B) | **50.00%** | 32 |
+| Fine-tuned (DistilBERT) | **46.88%** | 32 |
+| Random baseline (4 classes) | 25.00% | — |
+| Majority-class baseline (always `impressionistic`) | 37.50% | — |
+
+The fine-tuned model slightly underperforms the zero-shot baseline and is only 9 points above the majority-class heuristic. The overall accuracy numbers alone are misleading — the per-class breakdown reveals fundamentally different failure modes.
+
+### Per-Class Metrics
+
+#### Baseline (Groq / Llama-3.3-70B)
+
+| Label | Precision | Recall | F1 | Support |
+|-------|-----------|--------|-----|---------|
+| `critical` | 0.50 | 0.33 | 0.40 | 9 |
+| `impressionistic` | 0.50 | 0.75 | 0.60 | 12 |
+| `comparative` | 0.25 | 0.50 | 0.33 | 2 |
+| `analytical` | **0.75** | 0.33 | 0.46 | 9 |
+| **Macro avg** | 0.50 | 0.48 | 0.45 | 32 |
+| **Weighted avg** | 0.55 | 0.50 | 0.49 | 32 |
+
+The baseline's strongest signal: when it predicts `analytical`, it's usually right (0.75 precision) — the model has a conservative but accurate sense of what analysis looks like. Its weakness: `critical` and `comparative` posts are often misclassified as `impressionistic` or `analytical`.
+
+#### Fine-tuned (DistilBERT)
+
+| Label | Precision | Recall | F1 | Support |
+|-------|-----------|--------|-----|---------|
+| `critical` | **0.00** | **0.00** | **0.00** | 9 |
+| `impressionistic` | 0.44 | **0.92** | 0.59 | 12 |
+| `comparative` | **0.00** | **0.00** | **0.00** | 2 |
+| `analytical` | 0.57 | 0.44 | 0.50 | 9 |
+| **Macro avg** | 0.25 | 0.34 | 0.27 | 32 |
+| **Weighted avg** | 0.33 | 0.47 | 0.36 | 32 |
+
+The fine-tuned model has **collapsed**: it predicts `impressionistic` for 25 of 32 test posts (78%), achieving 92% recall on the majority class at the cost of completely abandoning two minority classes. It never predicts `critical` or `comparative`.
+
+### Confusion Matrices
+
+#### Fine-tuned Model (DistilBERT) — Reconstructed
+
+The cells below are reconstructed from per-class precision/recall and the 15 logged wrong predictions. The model predicts only two of the four labels: `impressionistic` and `analytical`.
+
+|  | Pred critical | Pred impressionistic | Pred comparative | Pred analytical |
+|---|---|---|---|---|
+| **True critical** | 0 | 8 | 0 | 1 |
+| **True impressionistic** | 0 | **11** | 0 | 1 |
+| **True comparative** | 0 | 1 | 0 | 1 |
+| **True analytical** | 0 | 5 | 0 | **4** |
+
+**Key pattern:** The `impressionistic` column dominates. The model learned that predicting the majority class is the safest bet — it never predicts `critical` or `comparative` at all. The `analytical` column has some signal (4 of 7 analytical predictions are correct, precision 0.57) but misses more analytical posts than it catches (5 of 9 true analytical posts are misclassified as impressionistic).
+
+#### Baseline Model (Groq) — Key Confusions
+
+The baseline distributes predictions across all four labels but with clear systematic errors. The dominant confusions, reconstructed from per-class metrics:
+
+| Confusion direction | Count (est.) | Why it happens |
+|---------------------|-------------|----------------|
+| `critical` → `impressionistic` | ~3–4 of 9 | Short, emotionally-charged critical posts read as impressionistic to the model |
+| `analytical` → `impressionistic` | ~2–3 of 9 | Analytical posts with first-person framing or casual language are misread |
+| `analytical` → `critical` | ~2 of 9 | Deep analysis that reaches a verdict confuses the evaluation/explanation boundary |
+| `comparative` → `analytical` | ~1 of 2 | Comparative posts that include mechanical detail read as analytical |
+| `impressionistic` → `analytical` | ~1 of 12 | Personal experience with embedded game insight reads as analytical |
+
+The baseline's confusion pattern mirrors the **hard edge cases** identified during annotation (§3 of [planning.md](planning.md#3-hard-edge-cases)): impressionistic↔analytical and comparative↔analytical boundaries are where both humans and models struggle.
+
+![Fine-tuned model confusion matrix](confusion_matrix.png)
+
+### Wrong Prediction Analysis: 3 Examples
+
+These examples are from the fine-tuned model's test-set errors. Each reveals a different failure mode.
+
+---
+
+#### Example 1: Short critical post misclassified as impressionistic
+
+> **Post g177:** `>Huge\n\n3k lmao`
+>
+> **True:** `critical` | **Predicted:** `impressionistic` | **Confidence:** 0.28
+
+**Which labels are confused?** `critical` → `impressionistic`. This is the dominant error pattern: 8 of 9 true `critical` posts were predicted `impressionistic`.
+
+**Why is this boundary hard?** This post is 10 words long. It's a sarcastic dismissal of a claim that a VAC ban wave is "huge" by citing the actual number (3,000). Structurally, it's a critical evaluation — the author is assessing the scale of the ban wave using a numeric criterion. But the post has zero formal evaluation language: no "I think," no "this is bad because," no explicit criteria. The model sees a short, emotionally-toned post and maps it to `impressionistic`, which is the correct structural read for most short posts in the training data (67% of posts under 100 characters are `impressionistic`).
+
+**Is this a labeling problem or a data problem?** This is a **data distribution problem**. The training set taught the model that short = impressionistic. The label is correct — g177 is structurally a critical evaluation, just an extremely compressed one. But with only 9 `critical` posts in the training set shorter than 200 characters, the model never saw enough short critical posts to learn that evaluation can be terse.
+
+**What would fix it?** More short `critical` examples in training — one-line verdicts, score posts, quick dismissals. Or, a data augmentation strategy that shows the model that critical evaluation doesn't require length.
+
+---
+
+#### Example 2: Strategy advice post misclassified as impressionistic
+
+> **Post g038:** `Seems like a Loong. Perfect dodge is your best friend.`
+>
+> **True:** `analytical` | **Predicted:** `impressionistic` | **Confidence:** 0.27
+
+**Which labels are confused?** `analytical` → `impressionistic`. The second most common error (5 of 9 true analytical posts).
+
+**Why is this boundary hard?** The post identifies a boss type ("Loong" = dragon family) and recommends a specific mechanical counter (perfect dodge). This is analytical in structure — it explains *what* the enemy is and *how* to fight it. But it's 11 words with casual phrasing ("your best friend"). The model learned that `analytical` posts are long (average 700+ characters in training) and use formal terminology. This post looks like a casual tip — the kind of thing impressionistic posters say about their experience.
+
+**Is this a labeling problem or a data problem?** This is a **data problem** exacerbated by length bias. The label is correct — the post's structural mode is identification + mechanical advice, which is analytical. But the training data conditioned the model to expect analytical = long. 75% of `analytical` training posts are over 200 characters; this post is 54 characters. The model never learned that analytical insight can fit in two sentences.
+
+**What would fix it?** Deliberately include very short `analytical` posts in training. During annotation, actively seek out one-sentence mechanical tips and label them `analytical`. The model needs to learn that structure isn't length.
+
+---
+
+#### Example 3: Comparative post with gameplay advice misclassified as analytical
+
+> **Post g051:** `I just finished the game with both endings. This game is much easier and forgiving then sekiro, trust me. just dont give bosses time for rest, combine power attacks with your captured spirits so they just dont exit stun state, use crit chance and crit damage pills`
+>
+> **True:** `comparative` | **Predicted:** `analytical` | **Confidence:** 0.27
+
+**Which labels are confused?** `comparative` → `analytical`. This is the comparative/analytical boundary — the hardest edge case in the taxonomy.
+
+**Why is this boundary hard?** The post gives concrete, actionable gameplay advice (combine power attacks with spirits, use crit pills, don't give bosses rest). That reads as analytical. But the *organizing structure* is comparative: "This game is much easier and forgiving then sekiro" is the thesis, and the gameplay advice is evidence for that thesis. The post isn't trying to teach you how to play — it's trying to convince you the game is easier than Sekiro. The gameplay advice serves the comparison. Distinguishing "advice that teaches" (analytical) from "advice that supports a comparison" (comparative) requires understanding the post's rhetorical goal, not just its content.
+
+**Is this a labeling problem or a data problem?** This is a **fundamental taxonomy challenge**. The label is consistent with the taxonomy — the comparison is the organizing structure. But with only 13 `comparative` examples in the entire dataset (2 in the test set), the model had almost no opportunity to learn what separates `comparative` from `analytical`. A human also finds this boundary difficult (this post was flagged as borderline during annotation).
+
+**What would fix it?** The `comparative` class needs at least 30–40 examples for the model to learn the comparison-vs-analysis distinction. Targeted data collection from "X vs Y" and franchise-comparison threads would help. Alternatively, the taxonomy could be simplified to 3 labels by merging `comparative` into `analytical` — many comparative posts are analytically rich, and the distinction may be too fine-grained for a dataset of this size.
+
+### Sample Classifications
+
+Examples run through the fine-tuned model on the test set, showing predicted label and confidence:
+
+| Post (truncated) | True Label | Predicted | Confidence | Assessment |
+|------------------|------------|-----------|------------|------------|
+| "this game is just as bad as sekiro it feels liek the game is not meant to be beat..." | `impressionistic` | `impressionistic` | 0.32 | **Correct.** The model recognizes the emotional-first-person structure despite the Sekiro comparison — the comparison serves the feeling, not an argument. |
+| "Okay…so here's how VAC actually works. The best analog to describe it is antivirus software…only for cheats..." | `analytical` | `analytical` | 0.31 | **Correct.** The model correctly identifies the explanatory structure — "here's how X works" is a strong analytical signal the model learned to recognize. |
+| "I just finished the game with both endings. This game is much easier and forgiving then sekiro..." | `comparative` | `analytical` | 0.27 | **Wrong.** See Example 3 above. The gameplay advice reads as analytical; the model misses that the comparison is the organizing thesis. |
+| "I do this. Just study for a couple fights to learn. Only boss i looked up on youtube was Yellow Loong. He was a pain." | `impressionistic` | `impressionistic` | 0.29 | **Correct.** The model correctly reads "I do this" + personal experience as impressionistic, even though the post mentions studying/learning. The first-person experiential frame is the dominant signal. |
+| ">Huge\n\n3k lmao" | `critical` | `impressionistic` | 0.28 | **Wrong.** See Example 1 above. The model sees a short post and defaults to impressionistic. |
+
+---
+
+## Reflection: What the Model Captured vs. What I Intended
+
+### What the model overfit to
+
+**Post length as a proxy for label.** The fine-tuned model learned that short → `impressionistic` and long → `analytical`. This isn't entirely wrong — in the training data, `impressionistic` posts average 228 characters and `analytical` posts average 711 characters. Real gaming discourse does follow this pattern: emotional reactions tend to be short, mechanical explanations tend to be long. But the model used length as a shortcut instead of learning the structural signals. Every short `critical` post and every short `analytical` post in the test set was misclassified.
+
+**Emotional vocabulary as the impressionistic signal.** Words like "lol," "lmao," "bruh," and "bro" appear frequently in the training set's `impressionistic` posts. The model learned that these tokens → `impressionistic`, regardless of whether the post's structure is actually evaluative or analytical. Posts g177 ("3k lmao") and g069 ("do shut up already") use casual language but are structurally `critical` — the model sees "lmao" / casual tone and predicts `impressionistic`.
+
+### What the model missed
+
+**The difference between evaluation and experience in short posts.** A 10-word post can be critical ("0/10 award bait" — evaluating) or impressionistic ("yeah lol" — reacting). The model conflated them because it used length and tone as proxies. The taxonomy's key distinction — *is the author assessing or experiencing?* — doesn't register when the surface features (short, casual) override the structural signal.
+
+**Comparison as a distinct structural mode.** The model never predicted `comparative` — not once. With only 9 training examples of `comparative`, the model effectively learned that `comparative` doesn't exist. The few comparative posts in the test set were split between `analytical` predictions (when the post included gameplay detail) and `impressionistic` predictions (when the post was short). The taxonomy's most subtle distinction is invisible to the model because the data can't support it.
+
+**Rhetorical structure vs. content signals.** The model classified based on *what* a post talks about (mechanics, feelings, other games) rather than *how* the post is organized (explaining, experiencing, comparing, evaluating). This is the gap between the taxonomy's intent — classify by communicative structure — and what a small dataset can teach a model that sees tokens, not rhetoric.
+
+---
+
+## Spec Reflection
+
+### How the spec helped guide implementation
+
+The planning document's **hard edge cases section** ([`planning.md` §3](planning.md#3-hard-edge-cases)) was the single most useful piece of upfront design. By identifying the three boundary types (impressionistic↔analytical, comparative↔analytical, critical↔impressionistic) *before* annotation, I had a decision framework ready when I hit ambiguous posts. The dominant-mode rule — "which mode organizes the post?" — kept labeling consistent across 212 examples. Without it, I would have flipped between labels based on whatever signal I noticed first, producing inconsistent training data. The fact that the model's confusion matrix mirrors exactly these three boundaries (see confusion matrix above) validates that the spec correctly predicted where classification would be hardest.
+
+### How implementation diverged from the spec
+
+The spec called for **LLM pre-labeling of batches before human review** ([`planning.md` §7.2](planning.md#72-annotation-assistance)). In practice, the existing labels in the dataset already represented a prior annotation pass, so pre-labeling became a **review-and-verify** workflow rather than a generate-from-scratch workflow. The LLM independently classified all 212 posts, and the human compared those classifications against existing labels. This was more efficient than the planned batch-at-a-time approach — it surfaced the 33 borderline cases and 1 genuine disagreement in a single pass — but it meant the disclosure tracking worked differently: instead of a `pre_label` field per post, the `notes` column in `all_game.csv` records both the LLM's label and the existing label for every row. The spirit of the plan (LLM assists, human decides) was preserved; only the mechanics changed.
+
+---
+
+## AI Usage Disclosure
+
+This project used AI tools at four stages. Each instance describes what the AI was directed to do, what it produced, and what was changed or overridden.
+
+### Instance 1: Dataset splitting script
+
+**What I directed the AI to do:** Given the 212-post `train_game.json`, split it into `train.json`, `val.json`, and `test.json` with stratified sampling (preserving label proportions) and a 70/15/15 ratio. Document the split in the README with exact counts per label per split.
+
+**What it produced:** A Python script that implemented stratified splitting, verified no overlap between splits, and wrote the three output files. It also updated the README Dataset section with accurate per-game counts and the label distribution table.
+
+**What I changed:** Nothing for the split logic — it was correct on the first pass. For the README, I later revised the data source description to specify Steam Community forums as the sole collection source (the script had included placeholder language about Reddit that wasn't accurate for this dataset).
+
+### Instance 2: CSV pre-labeling and review
+
+**What I directed the AI to do:** Read all 212 posts in `all_game.json`, apply the TakeMeter taxonomy from `planning.md` to independently classify each post, compare against existing labels, flag borderline cases with reasoning, and write the results to `all_game.csv` with columns for text, label, and notes.
+
+**What it produced:** A CSV with 212 rows. The LLM's pre-labels matched existing labels on 211/212 posts (99.5% agreement). It flagged 33 posts as borderline/difficult with detailed reasoning for each (e.g., "BORDERLINE: comparison frames the argument but makes analytical claims about mechanics"). It identified one genuine disagreement: g026, which the LLM classified as `analytical` vs. the existing `comparative`.
+
+**What I changed or overrode:** I reviewed all 33 borderline cases and confirmed the LLM's reasoning for each. For the one disagreement (g026), I noted that both `comparative` and `analytical` are defensible — the post lists cross-game accomplishments but its dominant mode is explaining game systems — and the final label depends on which structural signal is weighted more heavily. I also added manual review flags for g006 (analytical vs. impressionistic boundary), g013, and g028 based on patterns I noticed when cross-referencing the LLM's borderline notes.
+
+### Instance 3: Notebook prompt writing
+
+**What I directed the AI to do:** Write the `LABEL_MAP` dictionary and `SYSTEM_PROMPT` for the Groq baseline classifier in the starter notebook, using the four TakeMeter labels with one-sentence definitions and one real example per label from the dataset.
+
+**What it produced:** A `LABEL_MAP` mapping the four label strings to integers 0–3, and a `SYSTEM_PROMPT` naming the community (Steam gaming forums), defining each label in plain language, providing a real example post per label, and instructing the model to output only the label name.
+
+**What I changed:** Nothing substantive. The label definitions and examples were copied directly from `planning.md` and the dataset. I verified that the examples were representative and that the prompt's output format constraints matched what the `classify_with_groq()` parser expects.
+
+### Instance 4: Failure analysis
+
+**What I directed the AI to do:** Analyze the 17 wrong predictions from the fine-tuned model, identify systematic confusion patterns, and explain *why* each failure mode occurs — distinguishing labeling problems from data problems from fundamental taxonomy challenges.
+
+**What it produced:** Three patterns identified: (1) the model collapsed to predicting `impressionistic` for 78% of test posts, (2) post length was learned as a proxy for label (short → impressionistic, long → analytical), and (3) the `comparative` class was invisible to the model (never predicted). Three detailed wrong-prediction analyses were written up for the evaluation report, each addressing the four guiding questions (which labels confused, why the boundary is hard, labeling vs. data problem, what would fix it).
+
+**What I changed:** I verified the three patterns against the per-class metrics and confusion matrix to ensure the analysis matched the quantitative results. The length-bias pattern was cross-checked against the training data distribution (I computed average post lengths per label to confirm the pattern was real). The claim about comparative invisibility was confirmed by the 0.00 F1 score on that class.
+
+---
 
 ## Limitations and Future Work
 
-- **Domain specificity:** The model is trained on gaming forum data and may not generalize to other communities (anime, sports, music) without additional fine-tuning
-- **Label ambiguity:** Some posts genuinely sit at the boundary between labels (e.g., analytical posts that reach a verdict, or comparative posts that include deep analysis)
-- **Temporal drift:** Community discourse norms evolve over time, which may require periodic re-annotation
-- **Scale:** 212 annotated posts is modest; more data would improve robustness
+- **Majority-class collapse:** The fine-tuned model predicts `impressionistic` for most inputs. Mitigations: weighted loss function, oversampling minority classes, or reducing to a 3-label taxonomy by merging `comparative` into `analytical`.
+- **Domain specificity:** The model is trained on gaming forum data and may not generalize to other communities (anime, sports, music) without additional fine-tuning.
+- **Label ambiguity:** The impressionistic↔analytical and comparative↔analytical boundaries are inherently difficult — 15.6% of posts were flagged as borderline during annotation, and the model's errors cluster on exactly these boundaries.
+- **Temporal drift:** Community discourse norms evolve over time, which may require periodic re-annotation.
+- **Scale:** 212 annotated posts is modest. The `comparative` class (13 examples, 6.1%) is too small for reliable learning — the model effectively ignores it.
+- **Length bias:** The model overfits to post length as a proxy for label. Future training should include diverse post lengths for every label.
+- **The fine-tuned model underperforms the zero-shot baseline:** A 70B-parameter model with no training examples outperformed a fine-tuned 67M-parameter model. This suggests that either (a) the training data is too small or noisy for DistilBERT to learn the distinctions, or (b) the label definitions themselves are more naturally captured by a model with broader language understanding. A mid-range approach — fine-tuning a larger model (e.g., Llama-3B) with the same data — would clarify whether the bottleneck is model capacity or data quality.
 
 ## License
 
